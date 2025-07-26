@@ -16,7 +16,7 @@ Dv = 0.08;              % Diffusion coefficient for V
 dt = 1.0;               % Time step
 steps = 5000;           % Number of iterations
 save_interval = 100;    % Save an image every N steps
-num_spots = 50;         % Number of initial large spots
+num_spots = 10;         % Number of initial large spots
 use_jet = true;         % true = jet (color), false = gray (grayscale)
 
 % --- List of parameters (F, k) ---
@@ -24,18 +24,18 @@ use_jet = true;         % true = jet (color), false = gray (grayscale)
 % The program will process all active lines and save results in separate folders
 param_list = [
 %%|   F     |   k    |   Pattern type
-    0.010  0.050;  % isolated spots
-    0.014  0.047;  % waves
-    0.025  0.052;  % pulsating lotus
+%%    0.010  0.050;  % isolated spots
+%%    0.014  0.047;  % waves
+%%    0.025  0.052;  % pulsating lotus
 %%    0.022  0.059;  % cell war
-%%    0.030  0.057;  % labyrinth, Blaupunkt speaker pattern
+      0.030  0.057;  % maze, Blaupunkt speaker pattern
 %%    0.025  0.054;  % fingerprint 1
 %%    0.038  0.060;  % fingerprint 2
 %%    0.022  0.051;  % stripes and holes
 %%    0.046  0.063;  % worms
 %%    0.030  0.060;  % soliton
 %%    0.035  0.065;  % spots
-%%    0.037  0.057;  % hell
+%%    0.037  0.057;  % firestorm
 %%    0.095  0.056;  % soap bubbles
 %%    0.082  0.059;  % puffball
 %%    0.082  0.060;  % amoeboid
@@ -191,4 +191,3 @@ catch % Simulation can be interrupted anytime with Ctrl+C, then this block runs
     print(interrupted_file, "-dpng");
     fprintf("⚠ Current state saved: %s\n", interrupted_file);
 end
-
