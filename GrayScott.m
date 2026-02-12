@@ -9,6 +9,31 @@
 clear; clc;
 pkg load image;
 
+% -----------------------------------------------------------------------
+% Mathematical background (short version)
+% -----------------------------------------------------------------------
+% The Gray-Scott reaction-diffusion system models two concentrations, U(x,y,t)
+% and V(x,y,t):
+%
+%   dU/dt = Du * ΔU - U*V^2 + F*(1-U)
+%   dV/dt = Dv * ΔV + U*V^2 - (F+k)*V
+%
+% where:
+%   - Du, Dv: diffusion coefficients
+%   - F: feed rate of U
+%   - k: kill rate of V
+%   - Δ: 2D Laplacian operator (here implemented by finite differences)
+%
+% Time integration below uses explicit Euler with internal substeps
+% (dt_sub <= max_dt) for better stability:
+%   U_{n+1} = U_n + dt_sub * RHS_U(U_n, V_n)
+%   V_{n+1} = V_n + dt_sub * RHS_V(U_n, V_n)
+%
+% Error propagation is estimated by linearized sensitivity equations:
+%   d/dp [U_{n+1};V_{n+1}] ≈ J_state * d/dp [U_n;V_n] + dRHS/dp
+% for parameters p in {F, k}. This yields uncertainty maps from user-supplied
+% parameter uncertainties sigma_F and sigma_k.
+
 % --- Basic settings ---
 n = 300;                % Grid size (tested up to 1200)
 Du = 0.16;              % Diffusion coefficient for U
@@ -18,6 +43,13 @@ steps = 5000;           % Number of iterations
 save_interval = 100;    % Save an image every N steps
 num_spots = 10;         % Number of initial large spots
 use_jet = true;         % true = jet (color), false = gray (grayscale)
+
+% --- Uncertainty model for error propagation ---
+sigma_F = 5e-4;         % Standard uncertainty of F
+sigma_k = 5e-4;         % Standard uncertainty of k
+sigma_num = 1e-6;       % Baseline numerical error floor
+max_dt = 0.25;          % Internal substep upper bound for explicit Euler
+clamp_max = 1.20;       % Physical concentration clamp to improve robustness
 
 % --- List of parameters (F, k) ---
 % Uncomment the lines you want to run and comment out the ones you don’t.
@@ -44,12 +76,6 @@ param_list = [
 %%    0.042  0.059;  % concentric waves
 ];
 
-% --- Laplacian operator function ---
-function L = laplacian(M)
-    L = -4*M + circshift(M,[1,0]) + circshift(M,[-1,0]) ...
-             + circshift(M,[0,1]) + circshift(M,[0,-1]);
-end
-
 try
     for idx = 1:rows(param_list)
         F = param_list(idx, 1);
@@ -64,6 +90,18 @@ try
         % --- Initial conditions ---
         U = ones(n, n);
         V = zeros(n, n);
+
+        % Sensitivity states for linearized error propagation
+        dU_dF = zeros(n, n);
+        dV_dF = zeros(n, n);
+        dU_dk = zeros(n, n);
+        dV_dk = zeros(n, n);
+
+        % History vectors for graphical post-analysis
+        hist_step = [];
+        hist_rms_sigmaV = [];
+        hist_meanU = [];
+        hist_meanV = [];
 
         % Old center disturbance initialization (optional):
 ##        r = 20; cx = n/2; cy = n/2;
@@ -90,9 +128,14 @@ try
 
         % --- Simulation loop ---
         for t = 0:steps
-            U_new = U + (Du*laplacian(U) - U.*V.^2 + F*(1 - U)) * dt;
-            V_new = V + (Dv*laplacian(V) + U.*V.^2 - (F + k)*V) * dt;
-            U = U_new; V = V_new;
+            [U, V, dU_dF, dV_dF, dU_dk, dV_dk, sigmaU_map, sigmaV_map] = ...
+                grayscott_step(U, V, dU_dF, dV_dF, dU_dk, dV_dk, Du, Dv, ...
+                F, k, dt, sigma_F, sigma_k, sigma_num, max_dt, clamp_max);
+
+            hist_step(end+1) = t; %#ok<AGROW>
+            hist_rms_sigmaV(end+1) = sqrt(mean(sigmaV_map(:).^2)); %#ok<AGROW>
+            hist_meanU(end+1) = mean(U(:)); %#ok<AGROW>
+            hist_meanV(end+1) = mean(V(:)); %#ok<AGROW>
 
             % Check for instability
             if any(isnan(U(:))) || any(isnan(V(:))) || ...
@@ -113,36 +156,67 @@ try
                     else
                         clf;
                     end
+
+                    subplot(2,2,1);
                     imagesc(V);
                     if use_jet            % Select color palette
-                      colormap(jet);
+                        colormap(gca, jet);
                     else
-                      colormap(gray);
+                        colormap(gca, gray);
                     end
-                    axis image;
-                    colorbar;
-                    title(sprintf("Gray-Scott model (step: %d)", t), ...
-                       "fontsize", 14);
-                    xlabel(sprintf("F = %.3f, k = %.3f", F, k), "fontsize", 12);
+                    axis image; colorbar;
+                    title(sprintf("V concentration (step: %d)", t), "fontsize", 12);
+                    xlabel(sprintf("F = %.3f, k = %.3f", F, k), "fontsize", 10);
+
+                    subplot(2,2,2);
+                    imagesc(sigmaV_map);
+                    colormap(gca, hot);
+                    axis image; colorbar;
+                    title("Propagated uncertainty of V", "fontsize", 12);
+                    xlabel(sprintf("RMS(\sigma_V)=%.3e", hist_rms_sigmaV(end)), ...
+                        "fontsize", 10);
+
+                    subplot(2,2,3);
+                    semilogy(hist_step, hist_rms_sigmaV, "LineWidth", 1.3);
+                    grid on;
+                    xlim([0, steps]);
+                    xlabel("Step"); ylabel("RMS propagated error in V");
+                    title("Error propagation over time", "fontsize", 12);
+
+                    subplot(2,2,4);
+                    plot(hist_step, hist_meanU, "b", "LineWidth", 1.2); hold on;
+                    plot(hist_step, hist_meanV, "r", "LineWidth", 1.2); hold off;
+                    grid on;
+                    xlim([0, steps]);
+                    xlabel("Step"); ylabel("Spatial mean concentration");
+                    legend("mean(U)", "mean(V)", "Location", "best");
+                    title("Global concentration trends", "fontsize", 12);
+
                     drawnow;
-                    % Save PNG directly from matrix (1 cell = 1 pixel)
+
+                    % Save a full analysis dashboard snapshot
                     filename = sprintf("%s/step_%05d.png", foldername, t);
-                    % All PNG files are saved in RGB format;
-                    % only the applied colormap changes
-                    if use_jet
-                       cmap = jet(256);
-                     else
-                       cmap = gray(256);
-                    end
-                    img_rgb = ind2rgb(gray2ind(mat2gray(V), 256), cmap);
-                    imwrite(img_rgb, filename);
-                    % To save a screenshot, comment out the previous
-                    % lines and uncomment the line below:
-                    % print(filename, "-dpng");
+                    print(filename, "-dpng", "-r120");
                     fprintf("  Saved: %s\n", filename);
                 end
             end
         end
+
+        % Save a compact result summary plot at the end for this parameter set
+        summary_name = sprintf("%s/summary.png", foldername);
+        figure(2); clf;
+        subplot(1,2,1);
+        semilogy(hist_step, hist_rms_sigmaV, "k", "LineWidth", 1.4); grid on;
+        xlabel("Step"); ylabel("RMS propagated error in V");
+        title("Error propagation summary");
+        subplot(1,2,2);
+        plot(hist_step, hist_meanU, "b", hist_step, hist_meanV, "r", "LineWidth", 1.2);
+        grid on;
+        xlabel("Step"); ylabel("Spatial mean concentration");
+        legend("mean(U)", "mean(V)", "Location", "best");
+        title("Mean concentration evolution");
+        print(summary_name, "-dpng", "-r150");
+        fprintf("  Saved: %s\n", summary_name);
 
         % --- Create GIF from PNG files ---
         try
